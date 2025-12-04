@@ -1,0 +1,105 @@
+import pandas as pd
+import numpy as np
+
+def generate_rating_map(filepath, num_buckets=6):
+    # 1. Load and Aggregate Data
+    df = pd.read_csv(filepath)
+    df_agg = df.groupby('fico_score').agg(
+        defaults=('default', 'sum'),
+        total=('default', 'count')
+    ).reset_index().sort_values('fico_score')
+
+    fico_scores = df_agg['fico_score'].values
+    defaults = df_agg['defaults'].values
+    totals = df_agg['total'].values
+    n_unique = len(fico_scores)
+
+    # 2. Precompute Cumulative Sums for O(1) interval queries
+    cum_defaults = np.zeros(n_unique + 1)
+    cum_totals = np.zeros(n_unique + 1)
+    cum_defaults[1:] = np.cumsum(defaults)
+    cum_totals[1:] = np.cumsum(totals)
+
+    def get_bucket_stats(i, j):
+        k = cum_defaults[j] - cum_defaults[i]
+        n = cum_totals[j] - cum_totals[i]
+        return k, n
+
+    def compute_ll(k, n):
+        if n == 0: return 0
+        p = k / n
+        if p <= 0 or p >= 1: return 0 # Perfect purity has 0 log-loss (max LL)
+        return k * np.log(p) + (n - k) * np.log(1 - p)
+
+    # 3. Dynamic Programming
+    # dp[k][i] = max LL with k buckets for first i unique FICO scores
+    dp = np.full((num_buckets + 1, n_unique + 1), -np.inf)
+    boundaries = np.zeros((num_buckets + 1, n_unique + 1), dtype=int)
+    
+    # Precompute costs for all intervals (optional optimization)
+    cost_matrix = np.zeros((n_unique + 1, n_unique + 1))
+    for i in range(n_unique):
+        for j in range(i + 1, n_unique + 1):
+            k, n = get_bucket_stats(i, j)
+            cost_matrix[i][j] = compute_ll(k, n)
+
+    # Base case: 1 bucket
+    for i in range(1, n_unique + 1):
+        dp[1][i] = cost_matrix[0][i]
+
+    # DP Iteration
+    for b in range(2, num_buckets + 1):
+        for i in range(b, n_unique + 1):
+            # Find best split point j
+            # Optimization: j must be at least b-1
+            best_val = -np.inf
+            best_j = -1
+            for j in range(b - 1, i):
+                val = dp[b-1][j] + cost_matrix[j][i]
+                if val > best_val:
+                    best_val = val
+                    best_j = j
+            dp[b][i] = best_val
+            boundaries[b][i] = best_j
+
+    # 4. Reconstruct Buckets
+    bucket_splits = []
+    curr_idx = n_unique
+    for b in range(num_buckets, 0, -1):
+        prev_idx = boundaries[b][curr_idx]
+        bucket_splits.append((prev_idx, curr_idx))
+        curr_idx = prev_idx
+    bucket_splits.reverse()
+
+    # 5. Format Output
+    results = []
+    rating = num_buckets # Lowest rating (highest number) for lowest score
+    
+    # We want Rating 1 = Best Score (Highest FICO)
+    # The loop above gives buckets from Lowest FICO to Highest FICO.
+    # So the last bucket should be Rating 1.
+    
+    # Let's assign ratings from K down to 1
+    current_rating = num_buckets
+    
+    for start, end in bucket_splits:
+        min_fico = fico_scores[start]
+        max_fico = fico_scores[end - 1]
+        k, n = get_bucket_stats(start, end)
+        default_rate = k / n if n > 0 else 0
+        
+        results.append({
+            'Rating': current_rating,
+            'Min_FICO': min_fico,
+            'Max_FICO': max_fico,
+            'Default_Rate': default_rate,
+            'Defaults': k,
+            'Total': n
+        })
+        current_rating -= 1
+        
+    return pd.DataFrame(results).sort_values('Rating')
+
+# Example Usage:
+# rating_map = generate_rating_map('Task 3 and 4_Loan_Data.csv', num_buckets=6)
+# print(rating_map)
