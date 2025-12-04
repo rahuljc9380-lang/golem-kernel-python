@@ -1,0 +1,82 @@
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+
+# 1. Load the dataset
+# Ensure 'Task 3 and 4_Loan_Data.csv' is in the same directory
+df = pd.read_csv('Task 3 and 4_Loan_Data.csv')
+
+# 2. Define features and target
+# We exclude 'customer_id' as it is not a predictive feature
+features = [
+    'credit_lines_outstanding', 
+    'loan_amt_outstanding', 
+    'total_debt_outstanding', 
+    'income', 
+    'years_employed', 
+    'fico_score'
+]
+X = df[features]
+y = df['default']
+
+# 3. Train the Model
+# We use Logistic Regression for its interpretability and probability output.
+# A stratify split ensures the proportion of defaults is consistent in training.
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+model = LogisticRegression(random_state=42, max_iter=1000)
+model.fit(X_train, y_train)
+
+# Optional: Print model accuracy on test set
+score = model.score(X_test, y_test)
+print(f"Model Accuracy on Test Set: {score:.4f}")
+
+# 4. Define the Expected Loss Function
+def calculate_expected_loss(loan_properties):
+    """
+    Calculates the expected loss of a loan given its properties.
+    
+    Args:
+        loan_properties (dict): A dictionary containing the loan details.
+            Required keys: 'credit_lines_outstanding', 'loan_amt_outstanding', 
+                           'total_debt_outstanding', 'income', 'years_employed', 'fico_score'
+    
+    Returns:
+        float: The expected loss value (currency units).
+    """
+    # Convert input dict to DataFrame and ensure correct column order
+    input_data = pd.DataFrame([loan_properties])
+    input_data = input_data[features] 
+    
+    # Predict Probability of Default (PD)
+    # model.predict_proba returns an array [[prob_no_default, prob_default]]
+    # We take the probability of class 1 (default)
+    pd_probability = model.predict_proba(input_data)[0][1]
+    
+    # Calculate Loss Given Default (LGD)
+    # Recovery Rate is given as 10%
+    recovery_rate = 0.10
+    lgd = 1 - recovery_rate
+    
+    # Exposure at Default (EAD)
+    # We assume the current loan amount outstanding is the exposure
+    ead = loan_properties['loan_amt_outstanding']
+    
+    # Calculate Expected Loss
+    expected_loss = pd_probability * lgd * ead
+    
+    return expected_loss
+
+# --- Example Usage ---
+# You can define a new loan application as a dictionary
+new_loan = {
+    'credit_lines_outstanding': 0,
+    'loan_amt_outstanding': 5221.54,
+    'total_debt_outstanding': 3915.47,
+    'income': 78039.38,
+    'years_employed': 5,
+    'fico_score': 605
+}
+
+loss = calculate_expected_loss(new_loan)
+print(f"\nExpected Loss for the new loan: ${loss:.2f}")
