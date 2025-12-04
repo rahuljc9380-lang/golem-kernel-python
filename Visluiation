@@ -1,0 +1,82 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+
+# 1. Load and Process Data
+# Assuming the file is in the same directory
+df = pd.read_csv('Nat_Gas.csv')
+df['Dates'] = pd.to_datetime(df['Dates'], format='%m/%d/%y')
+
+# Convert dates to "days from start" for regression
+start_date = df['Dates'].min()
+df['Days'] = (df['Dates'] - start_date).dt.days
+
+# 2. Define the Model
+# We use a linear trend + a sinusoidal seasonal component
+# Frequency is fixed to annual (2*pi/365.25)
+def price_model(time_days, slope, intercept, amplitude, phase):
+    frequency = 2 * np.pi / 365.25
+    return slope * time_days + intercept + amplitude * np.sin(frequency * time_days + phase)
+
+# 3. Fit the Model to the Data
+# Initial guesses: small positive slope, intercept near start price, amplitude ~1
+p0 = [0.001, df['Prices'].iloc[0], 1.0, 0]
+params, covariance = curve_fit(price_model, df['Days'], df['Prices'], p0=p0)
+
+slope_fit, intercept_fit, amplitude_fit, phase_fit = params
+
+print(f"Model Parameters:\nSlope: {slope_fit:.5f}\nIntercept: {intercept_fit:.2f}\nAmplitude: {amplitude_fit:.2f}\nPhase: {phase_fit:.2f}")
+
+# 4. Define the Estimation Function
+def get_estimated_price(date_str):
+    """
+    Estimates the natural gas price for a given date.
+    Input: date_str (str) in 'MM/DD/YY' or 'YYYY-MM-DD' format
+    Output: price (float)
+    """
+    try:
+        input_date = pd.to_datetime(date_str)
+    except:
+        return None
+
+    days_from_start = (input_date - start_date).days
+    
+    # Use the fitted model to calculate price
+    estimated_price = price_model(days_from_start, slope_fit, intercept_fit, amplitude_fit, phase_fit)
+    return estimated_price
+
+# --- Example Usage ---
+test_date = '2025-06-30'
+price = get_estimated_price(test_date)
+print(f"Estimated price for {test_date}: ${price:.2f}")
+
+# 5. Visualization (Optional)
+def plot_data():
+    plt.figure(figsize=(12, 6))
+    
+    # Plot historical
+    plt.plot(df['Dates'], df['Prices'], 'o', label='Historical Data')
+    
+    # Generate forecast dates (History + 1 Year)
+    max_date = df['Dates'].max()
+    end_forecast = max_date + timedelta(days=365)
+    
+    # Create a range of dates
+    plot_dates = pd.date_range(start=start_date, end=end_forecast, freq='D')
+    plot_days = (plot_dates - start_date).days
+    
+    # Calculate modeled prices
+    model_prices = price_model(plot_days, *params)
+    
+    plt.plot(plot_dates, model_prices, '-', label='Model Fit & Extrapolation', alpha=0.8)
+    plt.title('Natural Gas Price Estimation')
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# Uncomment to see the plot
+# plot_data()
