@@ -1,0 +1,182 @@
+import pandas as pd
+import numpy as np
+from datetime import date, timedelta
+import math
+
+# 1. Load and Process the Data
+def load_and_process_data(filepath):
+    """
+    Loads the CSV, converts dates to datetime objects, and sorts them.
+    """
+    try:
+        df = pd.read_csv(filepath)
+        df['Dates'] = pd.to_datetime(df['Dates'])
+        return df.sort_values('Dates')
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return None
+
+# 2. Price Estimation Helper
+def get_estimated_price(query_date, df):
+    """
+    Estimates the price for a specific date. 
+    If the date is in the data, return the price.
+    If not, perform linear interpolation.
+    """
+    query_date = pd.to_datetime(query_date)
+    
+    # Exact match
+    if query_date in df['Dates'].values:
+        return df.loc[df['Dates'] == query_date, 'Prices'].iloc[0]
+    
+    # Interpolation logic
+    # Find the nearest dates before and after
+    df_sort = df.sort_values('Dates')
+    prev_dates = df_sort[df_sort['Dates'] < query_date]
+    next_dates = df_sort[df_sort['Dates'] > query_date]
+    
+    if prev_dates.empty or next_dates.empty:
+        # Fallback for out of bounds (simplification for prototype: use nearest)
+        # In a production model, you would use a seasonal extrapolation model here
+        if prev_dates.empty:
+            return next_dates['Prices'].iloc[0]
+        else:
+            return prev_dates['Prices'].iloc[-1]
+            
+    prev_date = prev_dates.iloc[-1]['Dates']
+    prev_price = prev_dates.iloc[-1]['Prices']
+    next_date = next_dates.iloc[0]['Dates']
+    next_price = next_dates.iloc[0]['Prices']
+    
+    # Linear interpolation formula
+    delta_total = (next_date - prev_date).days
+    delta_query = (query_date - prev_date).days
+    interpolated_price = prev_price + (next_price - prev_price) * (delta_query / delta_total)
+    
+    return interpolated_price
+
+# 3. The Pricing Function
+def calculate_contract_value(injection_dates, withdrawal_dates, 
+                             injection_rate, withdrawal_rate, 
+                             max_volume, storage_cost_per_unit_per_month, 
+                             injection_withdrawal_cost, prices_df):
+    """
+    Calculates the value of the storage contract.
+    
+    inputs:
+        injection_dates (list of tuples): [(date, volume), ...]
+        withdrawal_dates (list of tuples): [(date, volume), ...]
+        injection_rate (float): Max volume capable of being injected per action
+        withdrawal_rate (float): Max volume capable of being withdrawn per action
+        max_volume (float): Maximum storage capacity
+        storage_cost_per_unit_per_month (float): Cost to store 1 unit for 1 month
+        injection_withdrawal_cost (float): Transaction cost per unit (transport/processing)
+        prices_df (DataFrame): Historical/Forecasted prices
+    
+    returns:
+        float: Net Profit/Loss of the contract
+    """
+    
+    volume_in_storage = 0
+    cash_flow = 0
+    
+    # Combine all actions into a single timeline to process chronologically
+    # Type: 'Inj' or 'With'
+    actions = []
+    for d, vol in injection_dates:
+        actions.append({'date': pd.to_datetime(d), 'type': 'Inj', 'vol': vol})
+    for d, vol in withdrawal_dates:
+        actions.append({'date': pd.to_datetime(d), 'type': 'With', 'vol': vol})
+        
+    # Sort actions by date
+    actions.sort(key=lambda x: x['date'])
+    
+    last_date = actions[0]['date'] if actions else date.today()
+    
+    print("\n--- Processing Contract Actions ---")
+    
+    for action in actions:
+        current_date = action['date']
+        action_type = action['type']
+        requested_vol = action['vol']
+        
+        # 1. Calculate Storage Costs accrued since last action
+        days_elapsed = (current_date - last_date).days
+        months_elapsed = days_elapsed / 30.44  # Average days in a month
+        accrued_storage_cost = volume_in_storage * storage_cost_per_unit_per_month * months_elapsed
+        
+        cash_flow -= accrued_storage_cost # Storage is always a cost
+        
+        if days_elapsed > 0:
+            print(f"  Storage Cost ({last_date.date()} to {current_date.date()}): -${accrued_storage_cost:.2f}")
+
+        # Get market price for this date
+        price = get_estimated_price(current_date, prices_df)
+        
+        # 2. Process Action
+        if action_type == 'Inj':
+            # Check Rate Constraint
+            actual_vol = min(requested_vol, injection_rate)
+            # Check Capacity Constraint
+            if volume_in_storage + actual_vol > max_volume:
+                actual_vol = max_volume - volume_in_storage
+                print(f"  ! Warning: Injection capped at {actual_vol} due to max storage.")
+            
+            # Cost = (Price * Vol) + (Transport Cost * Vol)
+            cost = (price * actual_vol) + (injection_withdrawal_cost * actual_vol)
+            cash_flow -= cost
+            volume_in_storage += actual_vol
+            print(f"  Injecting {actual_vol:.2f} units at ${price:.2f}/unit on {current_date.date()}. Cost: -${cost:.2f}")
+            
+        elif action_type == 'With':
+            # Check Rate Constraint
+            actual_vol = min(requested_vol, withdrawal_rate)
+            # Check Inventory Constraint
+            if volume_in_storage - actual_vol < 0:
+                actual_vol = volume_in_storage
+                print(f"  ! Warning: Withdrawal capped at {actual_vol} due to empty storage.")
+            
+            # Revenue = (Price * Vol) - (Transport Cost * Vol)
+            revenue = (price * actual_vol) - (injection_withdrawal_cost * actual_vol)
+            cash_flow += revenue
+            volume_in_storage -= actual_vol
+            print(f"  Withdrawing {actual_vol:.2f} units at ${price:.2f}/unit on {current_date.date()}. Revenue: +${revenue:.2f}")
+
+        last_date = current_date
+
+    # Final logic: Value of remaining gas? 
+    # Usually in these contracts, you must empty the storage or sell the remainder at spot.
+    # For this prototype, we will assume remaining gas is sold at the last known price to close the book.
+    if volume_in_storage > 0:
+        print(f"  Clossing remaining inventory: {volume_in_storage:.2f} units.")
+        price = get_estimated_price(last_date, prices_df)
+        revenue = (price * volume_in_storage) - (injection_withdrawal_cost * volume_in_storage)
+        cash_flow += revenue
+        print(f"  Liquidation Revenue: +${revenue:.2f}")
+
+    return cash_flow
+
+# --- Test The Prototype ---
+if __name__ == "__main__":
+    # Load Data
+    df = load_and_process_data('Nat_Gas.csv')
+    
+    if df is not None:
+        # Define Contract Parameters
+        inputs = {
+            'injection_dates': [('2021-06-15', 100000), ('2021-07-15', 100000)], # Summer (Low prices)
+            'withdrawal_dates': [('2022-01-15', 150000), ('2022-02-15', 50000)], # Winter (High prices)
+            'injection_rate': 200000,   # Max injection per action
+            'withdrawal_rate': 200000,  # Max withdrawal per action
+            'max_volume': 500000,       # Max storage capacity
+            'storage_cost_per_unit_per_month': 0.01, # $0.01 per unit per month
+            'injection_withdrawal_cost': 0.05,       # $0.05 per unit transaction cost
+            'prices_df': df
+        }
+        
+        # Run Calculation
+        contract_value = calculate_contract_value(**inputs)
+        
+        print("\n" + "="*30)
+        print(f"Total Contract Value: ${contract_value:,.2f}")
+        print("="*30)
